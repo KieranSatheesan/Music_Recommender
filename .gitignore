@@ -1,0 +1,15 @@
+# Data and large files
+data/
+
+# Python virtual environment
+.venv/
+
+# Local secrets
+.env
+
+# Jupyter auto-saves
+.ipynb_checkpoints/
+
+# OS / editor junk
+.DS_Store
+Thumbs.db
