@@ -6,12 +6,16 @@ import pandas as pd
 import requests
 import streamlit as st
 
+from dotenv import load_dotenv
+
 from recommender import (
     load_all_models,
     recommend_by_name_hybrid,
     search_tracks_by_name,
     describe_tracks,
 )
+
+load_dotenv() 
 
 # ---------- PAGE CONFIG ----------
 
@@ -26,13 +30,17 @@ st.set_page_config(
 _SPOTIFY_TOKEN: Optional[str] = None
 
 
+_SPOTIFY_TOKEN: Optional[str] = None
+
+
 def _get_spotify_token() -> Optional[str]:
     """
     Get (and cache) a Spotify API token using Client Credentials flow.
 
-    Requires environment variables:
-      SPOTIFY_CLIENT_ID
-      SPOTIFY_CLIENT_SECRET
+    Tries these environment variables (in this order):
+
+      SPOTIFY_CLIENT_ID / SPOTIFY_CLIENT_SECRET
+      SPOTIPY_CLIENT_ID / SPOTIPY_CLIENT_SECRET
 
     If not set or request fails, returns None and app simply won't show covers.
     """
@@ -40,8 +48,16 @@ def _get_spotify_token() -> Optional[str]:
     if _SPOTIFY_TOKEN is not None:
         return _SPOTIFY_TOKEN
 
-    client_id = os.getenv("SPOTIFY_CLIENT_ID")
-    client_secret = os.getenv("SPOTIFY_CLIENT_SECRET")
+    # Prefer SPOTIFY_*, fall back to SPOTIPY_*
+    client_id = (
+        os.getenv("SPOTIFY_CLIENT_ID")
+        or os.getenv("SPOTIPY_CLIENT_ID")
+    )
+    client_secret = (
+        os.getenv("SPOTIFY_CLIENT_SECRET")
+        or os.getenv("SPOTIPY_CLIENT_SECRET")
+    )
+
     if not client_id or not client_secret:
         # No credentials provided -> silently disable covers
         return None
@@ -60,6 +76,7 @@ def _get_spotify_token() -> Optional[str]:
         _SPOTIFY_TOKEN = None
 
     return _SPOTIFY_TOKEN
+
 
 
 def fetch_spotify_cover(track_name: str, artist_name: str) -> Optional[str]:
@@ -151,6 +168,7 @@ def format_for_display(df: pd.DataFrame) -> pd.DataFrame:
 def style_numeric(df: pd.DataFrame) -> "pd.io.formats.style.Styler":
     """
     Apply colour gradients to numeric columns (audio + similarity metrics).
+    Green = close / high value, red = far / low value.
     """
     numeric_cols = [
         "Danceability",
@@ -163,8 +181,10 @@ def style_numeric(df: pd.DataFrame) -> "pd.io.formats.style.Styler":
         "Seq sim (item2vec)",
     ]
     styler = df.style.format(precision=3)
-    styler = styler.background_gradient(subset=numeric_cols, cmap="Blues")
+    # RdYlGn: red -> yellow -> green; low = red, high = green
+    styler = styler.background_gradient(subset=numeric_cols, cmap="RdYlGn")
     return styler
+
 
 
 # ---------- SIDEBAR / LEFT CONTROLS ----------
@@ -196,7 +216,7 @@ with main_col:
 
     if query:
         # 1) Search up to 30 songs in the HYBRID universe
-        hits = search_tracks_by_name(query, models=models, max_results=30)
+        hits = search_tracks_by_name(query, models=models, max_results=60)
 
         if hits.empty:
             st.warning("No matching tracks found in the hybrid universe.")
