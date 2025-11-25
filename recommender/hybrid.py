@@ -14,6 +14,35 @@ ALS_TOPN = 1000
 I2V_TOPN = 1000
 HYBRID_CANDIDATE_POOL = 2000
 
+# ---
+
+from pathlib import Path
+
+# ---------------------------------------------------------------------
+# Lightweight metadata cache just for search_tracks_by_name (for the app)
+# ---------------------------------------------------------------------
+_META_SEARCH_CACHE: pd.DataFrame | None = None
+
+def _get_meta_for_search() -> pd.DataFrame:
+    """
+    Load a minimal metadata table (track_id, track_name, artist_name, album_name)
+    for searching, cached in memory. This does NOT depend on meta_df_u from
+    the notebook; it just reads track_metadata.csv once.
+    """
+    global _META_SEARCH_CACHE
+    if _META_SEARCH_CACHE is not None:
+        return _META_SEARCH_CACHE
+
+    project_root = Path(__file__).resolve().parents[1]
+    data_processed = project_root / "data" / "processed"
+    meta_path = data_processed / "track_metadata.csv"
+
+    meta = pd.read_csv(meta_path, usecols=["track_id", "track_name", "artist_name", "album_name"])
+    meta["track_id"] = meta["track_id"].astype(str)
+
+    _META_SEARCH_CACHE = meta.drop_duplicates().reset_index(drop=True)
+    return _META_SEARCH_CACHE
+
 
 # --- Basic helpers ---
 
@@ -51,20 +80,41 @@ def describe_tracks(
 
 def search_tracks_by_name(
     query: str,
-    models: RecommenderModels,
     max_results: int = 10,
+    models=None,
+    artist_filter: str | None = None,
 ) -> pd.DataFrame:
-    meta_df_u = models.meta_df_u
-    q = query.lower()
+    """
+    Case-insensitive substring search over track_name (and optional artist_name).
+
+    - If `models` has a `meta_df_u` attribute, search that (HYBRID universe).
+    - Otherwise, fall back to a lightweight cached metadata table loaded
+      from track_metadata.csv, so the Streamlit app can still search.
+    """
+    # Choose metadata source
+    if models is not None and hasattr(models, "meta_df_u"):
+        meta_src = models.meta_df_u
+    else:
+        meta_src = _get_meta_for_search()
+
+    q = query.lower().strip()
+
     hits = (
-        meta_df_u.loc[
-            meta_df_u["track_name"].str.lower().str.contains(q, na=False),
+        meta_src.loc[
+            meta_src["track_name"].str.lower().str.contains(q, na=False),
             ["track_id", "track_name", "artist_name", "album_name"],
         ]
         .drop_duplicates()
-        .head(max_results)
     )
-    return hits
+
+    if artist_filter:
+        a = artist_filter.lower().strip()
+        hits = hits.loc[
+            hits["artist_name"].str.lower().str.contains(a, na=False)
+        ]
+
+    return hits.head(max_results).reset_index(drop=True)
+
 
 
 def get_cluster_id(track_id: str, models: RecommenderModels):
@@ -299,25 +349,20 @@ def recommend_by_name_hybrid(
     if candidate_index >= len(hits):
         candidate_index = len(hits) - 1
 
-    print("Search results:")
-    display(hits.reset_index(drop=True))
 
     seed_row = hits.iloc[candidate_index]
     seed_tid = seed_row["track_id"]
 
-    print("\nChosen seed track:")
-    display(seed_row.to_frame().T)
 
     # --- 2. hybrid scores ---
     df_scores = hybrid_scores_for_track(
-        seed_tid,
-        w_cos=w_cos,
-        w_als=w_als,
-        w_i2v=w_i2v,
-        w_cluster=w_cluster,
-        top_k=top_k,
-        candidate_pool=candidate_pool,
-        verbose=True,
+    track_id=seed_tid,
+    w_cos=w_cos,
+    w_als=w_als,
+    w_i2v=w_i2v,
+    w_cluster=w_cluster,
+    top_k=top_k,
+    candidate_pool=candidate_pool,
     )
 
     if df_scores.empty:
@@ -334,8 +379,6 @@ def recommend_by_name_hybrid(
     rec_df = rec_df.merge(df_scores, on="track_id", how="left")
     rec_df = rec_df.sort_values("hybrid_score", ascending=False).reset_index(drop=True)
 
-    print("\nHybrid recommendations:")
-    display(rec_df.head(top_k))
 
     return seed_row, rec_df
 

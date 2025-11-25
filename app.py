@@ -64,7 +64,6 @@ def get_album_image(track_name: str, artist_name: str) -> Optional[str]:
     # Smallest image (last entry)
     return images[-1]["url"]
 
-
 # -------------------------------------------------------------------------------------------------
 # Styling helpers
 # -------------------------------------------------------------------------------------------------
@@ -81,7 +80,7 @@ METRIC_COLS = [
 ]
 
 
-def style_seed_table(df: pd.DataFrame) -> pd.io.formats.style.Styler:
+def style_seed_table(df: pd.DataFrame):
     """Seed track: keep numeric columns solid green."""
     styler = df.style.hide_index()
 
@@ -94,21 +93,24 @@ def style_seed_table(df: pd.DataFrame) -> pd.io.formats.style.Styler:
         return "background-color: #005f2f; color: white;"
 
     styler = styler.applymap(green_numeric, subset=METRIC_COLS)
-    styler = styler.set_properties(subset=["Song", "Artist", "Album"],
-                                   **{"font-weight": "bold"})
+    styler = styler.set_properties(
+        subset=["Song", "Artist", "Album"],
+        **{"font-weight": "bold"},
+    )
     return styler
 
 
-def style_recs_table(df: pd.DataFrame) -> pd.io.formats.style.Styler:
+def style_recs_table(df: pd.DataFrame):
     """Recommendations: red→yellow→green gradient, Hybrid score last & bold."""
+    from matplotlib.colors import LinearSegmentedColormap
+
     cmap = LinearSegmentedColormap.from_list(
         "score_cmap",
         ["#8b0000", "#f0e442", "#006400"],  # dark red -> yellow -> dark green
     )
 
     styler = (
-        df.style
-        .hide_index()
+        df.style.hide_index()
         .background_gradient(cmap=cmap, subset=METRIC_COLS, axis=None)
         .set_properties(subset=["Hybrid score"], **{"font-weight": "bold"})
     )
