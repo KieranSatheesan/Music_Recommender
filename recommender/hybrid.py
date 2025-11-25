@@ -266,7 +266,6 @@ def hybrid_scores_for_track(
 
 def recommend_by_name_hybrid(
     query: str,
-    models: RecommenderModels,
     candidate_index: int = 0,
     w_cos: float = 0.3,
     w_als: float = 0.3,
@@ -274,47 +273,60 @@ def recommend_by_name_hybrid(
     w_cluster: float = 0.1,
     top_k: int = 20,
     candidate_pool: int = HYBRID_CANDIDATE_POOL,
-) -> tuple[pd.Series | None, pd.DataFrame, pd.DataFrame]:
+    max_search_results: int = 60,  # <-- match the app dropdown
+):
     """
-    High-level helper for external callers (e.g. Streamlit):
-
-      - search by track_name
-      - choose one candidate by index
+    Convenience wrapper:
+      - fuzzy search by track_name within HYBRID universe
+      - pick one candidate by index (safely clamped)
       - compute hybrid recommendations
-      - attach metadata + basic audio features
+      - attach metadata + audio features
 
-    Returns: (seed_row, rec_df, search_hits)
+    Returns:
+      seed_row (Series), rec_df (DataFrame)
     """
-    hits = search_tracks_by_name(query, models=models, max_results=10)
-    if hits.empty:
-        return None, pd.DataFrame(), hits
 
+    # --- 1. search ---
+    hits = search_tracks_by_name(query, max_results=max_search_results)
+
+    if hits.empty:
+        print(f"No matches for query '{query}'")
+        return None, pd.DataFrame()
+
+    # Clamp candidate_index into valid range instead of raising
+    if candidate_index < 0:
+        candidate_index = 0
     if candidate_index >= len(hits):
-        raise ValueError(
-            f"candidate_index {candidate_index} out of range for {len(hits)} results"
-        )
+        candidate_index = len(hits) - 1
+
+    print("Search results:")
+    display(hits.reset_index(drop=True))
 
     seed_row = hits.iloc[candidate_index]
     seed_tid = seed_row["track_id"]
 
+    print("\nChosen seed track:")
+    display(seed_row.to_frame().T)
+
+    # --- 2. hybrid scores ---
     df_scores = hybrid_scores_for_track(
         seed_tid,
-        models=models,
         w_cos=w_cos,
         w_als=w_als,
         w_i2v=w_i2v,
         w_cluster=w_cluster,
         top_k=top_k,
         candidate_pool=candidate_pool,
-        debug_coverage=False,
+        verbose=True,
     )
 
     if df_scores.empty:
-        return seed_row, pd.DataFrame(), hits
+        print("No hybrid candidates found.")
+        return seed_row, df_scores
 
+    # --- 3. attach metadata + a few audio features ---
     rec_df = describe_tracks(
         df_scores["track_id"].tolist(),
-        models=models,
         extra_cols=["danceability", "energy", "valence", "tempo"],
         top_n=None,
     )
@@ -322,4 +334,8 @@ def recommend_by_name_hybrid(
     rec_df = rec_df.merge(df_scores, on="track_id", how="left")
     rec_df = rec_df.sort_values("hybrid_score", ascending=False).reset_index(drop=True)
 
-    return seed_row, rec_df, hits
+    print("\nHybrid recommendations:")
+    display(rec_df.head(top_k))
+
+    return seed_row, rec_df
+
