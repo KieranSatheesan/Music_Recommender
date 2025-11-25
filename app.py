@@ -186,6 +186,34 @@ def style_numeric(df: pd.DataFrame) -> "pd.io.formats.style.Styler":
     return styler
 
 
+def style_seed_numeric(df: pd.DataFrame) -> "pd.io.formats.style.Styler":
+    """
+    For the single seed row: force all numeric columns to the 'greenest' colour.
+    """
+    numeric_cols = [
+        "Danceability",
+        "Energy",
+        "Valence",
+        "Tempo (BPM)",
+        "Hybrid score",
+        "Audio sim",
+        "Playlist sim (ALS)",
+        "Seq sim (item2vec)",
+    ]
+
+    styler = df.style.format(precision=3)
+
+    def full_green(row):
+        styles = []
+        for col in row.index:
+            if col in numeric_cols:
+                styles.append("background-color: #006400; color: white;")  # dark green
+            else:
+                styles.append("")
+        return styles
+
+    styler = styler.apply(full_green, axis=1)
+    return styler
 
 # ---------- SIDEBAR / LEFT CONTROLS ----------
 
@@ -279,19 +307,18 @@ with main_col:
 
                 seed_display = format_for_display(seed_feat)
 
-                # Layout: cover on left, table on right
-                c1, c2 = st.columns([1, 3])
-                with c1:
-                    if cover_url:
-                        st.image(cover_url, use_column_width=True)
-                    else:
-                        st.info("Album cover unavailable (no Spotify credentials or not found).")
+                # Cover art on its own line, slightly smaller
+                if cover_url:
+                    st.image(cover_url, width=350)  # <- adjust size if you want
+                else:
+                    st.info("Album cover unavailable (no Spotify credentials or not found).")
 
-                with c2:
-                    st.dataframe(
-                        style_numeric(seed_display),
-                        use_container_width=True,
-                    )
+                # Seed feature row table under the image
+                st.dataframe(
+                    style_seed_numeric(seed_display),   # <- new styling function below
+                    use_container_width=True,
+                )
+
 
                 # --- Recommendations table ---
                 st.subheader("Recommendations")

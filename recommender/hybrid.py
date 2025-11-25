@@ -274,6 +274,7 @@ def recommend_by_name_hybrid(
     w_cluster: float = 0.1,
     top_k: int = 20,
     candidate_pool: int = HYBRID_CANDIDATE_POOL,
+    search_max_results: int = 60,
 ) -> tuple[pd.Series | None, pd.DataFrame, pd.DataFrame]:
     """
     High-level helper for external callers (e.g. Streamlit):
@@ -285,7 +286,7 @@ def recommend_by_name_hybrid(
 
     Returns: (seed_row, rec_df, search_hits)
     """
-    hits = search_tracks_by_name(query, models=models, max_results=10)
+    hits = search_tracks_by_name(query, models=models, max_results=search_max_results)
     if hits.empty:
         return None, pd.DataFrame(), hits
 
