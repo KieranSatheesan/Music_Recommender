@@ -268,7 +268,7 @@ with main_col:
             seed_metadata = hits.iloc[selected_idx]
             seed_tid = seed_metadata["track_id"]
 
-            # Optional: fetch album art from Spotify
+            # fetch album art from Spotify
             cover_url = fetch_spotify_cover(
                 seed_metadata["track_name"], seed_metadata["artist_name"]
             )
