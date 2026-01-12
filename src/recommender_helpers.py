@@ -1,8 +1,12 @@
-from typing import List, Tuple, Optional
+from typing import List, Set, Dict, Tuple, Optional
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from sklearn.decomposition import PCA
+from sklearn.neighbors import NearestNeighbors
+from collections import defaultdict
+import random
+import math
 
 
 def describe_tracks(track_id_list: List[str], meta_df: pd.DataFrame, 
@@ -438,6 +442,532 @@ def plot_pca_recommendations(X_norm: np.ndarray,
     ax.set_ylabel(f"PC2 ({pca.explained_variance_ratio_[1]*100:.1f}% variance)",
                  fontsize=15, fontweight='bold')
     ax.grid(True, alpha=0.3, linestyle='--')
+    
+    plt.tight_layout()
+    plt.show()
+
+def fit_knn_models(X_z: np.ndarray, X_pca5: np.ndarray, X_pca8: np.ndarray,
+                   n_neighbors: int = 51) -> Dict[str, Dict]:
+    """
+    Fit multiple kNN models with different metrics and feature spaces.
+    
+    Args:
+        X_z: Z-score normalized features
+        X_pca5: PCA-reduced features (5 components)
+        X_pca8: PCA-reduced features (8 components)
+        n_neighbors: Number of neighbors to fit (includes self)
+        
+    Returns:
+        Dictionary of fitted models with their specifications
+    """
+    models = {}
+    
+    def fit_single(name, X, metric):
+        nn = NearestNeighbors(
+            n_neighbors=n_neighbors,
+            metric=metric,
+            algorithm="brute",
+            n_jobs=-1,
+        )
+        nn.fit(X)
+        models[name] = {
+            "nn": nn,
+            "X": X,
+            "metric": metric,
+        }
+        print(f"Fitted model '{name}' on X.shape={X.shape}, metric='{metric}'")
+    
+    fit_single("cosine_z", X_z, "cosine")
+    fit_single("euclidean_z", X_z, "euclidean")
+    fit_single("manhattan_z", X_z, "manhattan")
+    fit_single("pca5_euclidean", X_pca5, "euclidean")
+    fit_single("pca8_euclidean", X_pca8, "euclidean")
+    
+    return models
+
+
+def knn_recommend(
+    model_name: str,
+    models: Dict[str, Dict],
+    seed_track_id: str,
+    track_ids: List[str],
+    track_id_to_idx: Dict[str, int],
+    meta_df: pd.DataFrame,
+    top_k: int = 10,
+) -> pd.DataFrame:
+    """
+    Generate recommendations using a specified kNN model.
+    
+    Args:
+        model_name: Name of the model to use
+        models: Dictionary of fitted kNN models
+        seed_track_id: Track ID to find neighbors for
+        track_ids: List of all track IDs
+        track_id_to_idx: Mapping from track_id to index
+        meta_df: DataFrame with track metadata
+        top_k: Number of recommendations to return
+        
+    Returns:
+        DataFrame with recommendations including distances and metadata
+    """
+    if model_name not in models:
+        raise ValueError(f"Unknown model '{model_name}'. Available: {list(models.keys())}")
+    if seed_track_id not in track_id_to_idx:
+        raise ValueError(f"track_id {seed_track_id} not in track_id_to_idx.")
+    
+    nn = models[model_name]["nn"]
+    X = models[model_name]["X"]
+    
+    idx = track_id_to_idx[seed_track_id]
+    seed_vec = X[idx].reshape(1, -1)
+    
+    distances, indices = nn.kneighbors(seed_vec, n_neighbors=top_k + 1)
+    distances = distances[0]
+    indices = indices[0]
+    
+    # Exclude self if present
+    mask = indices != idx
+    distances = distances[mask]
+    indices = indices[mask]
+    
+    distances = distances[:top_k]
+    indices = indices[:top_k]
+    
+    neighbor_ids = [track_ids[i] for i in indices]
+    
+    # Convert distance to similarity for cosine metric
+    metric = models[model_name]["metric"]
+    if metric == "cosine":
+        similarities = 1.0 - distances
+    else:
+        similarities = [np.nan] * len(distances)
+    
+    recs = pd.DataFrame({
+        "track_id": neighbor_ids,
+        "distance": distances,
+        "similarity": similarities,
+    })
+    
+    recs = recs.merge(meta_df, on="track_id", how="left")
+    
+    return recs
+
+
+def compare_metrics_for_track_name(
+    query: str,
+    models: Dict[str, Dict],
+    track_ids: List[str],
+    track_id_to_idx: Dict[str, int],
+    meta_df: pd.DataFrame,
+    candidate_index: int = 0,
+    top_k: int = 10,
+    model_names: Optional[List[str]] = None,
+) -> Dict[str, pd.DataFrame]:
+    """
+    Compare recommendations across multiple models for a search query.
+    
+    Args:
+        query: Search string for track name
+        models: Dictionary of fitted kNN models
+        track_ids: List of all track IDs
+        track_id_to_idx: Mapping from track_id to index
+        meta_df: DataFrame with track metadata
+        candidate_index: Which search result to use as seed
+        top_k: Number of recommendations
+        model_names: List of models to compare (None = all)
+        
+    Returns:
+        Dictionary mapping model names to recommendation DataFrames
+    """
+    if model_names is None:
+        model_names = list(models.keys())
+    
+    # Search helper (inline for simplicity, or import from another module)
+    mask = meta_df["track_name"].str.contains(query, case=False, na=False)
+    matches = meta_df[mask].head(20)
+    
+    if matches.empty:
+        raise ValueError(f"No tracks found matching '{query}'")
+    
+    if not (0 <= candidate_index < len(matches)):
+        raise IndexError(f"candidate_index {candidate_index} out of range")
+    
+    print("Search results:")
+    print(matches.reset_index(drop=True)[["track_id", "track_name", "artist_name", "album_name"]])
+    
+    chosen = matches.iloc[candidate_index]
+    seed_id = chosen["track_id"]
+    
+    print("\nChosen seed track:")
+    print(chosen[["track_name", "artist_name", "album_name", "track_id"]])
+    
+    results = {}
+    for mname in model_names:
+        print(f"\n=== Recommendations for model: {mname} ===")
+        recs = knn_recommend(mname, models, seed_id, track_ids, track_id_to_idx, 
+                            meta_df, top_k=top_k)
+        print(recs[["track_name", "artist_name", "album_name", "distance", "similarity"]])
+        results[mname] = recs
+    
+    return results
+
+
+def evaluate_knn_model(
+    model_name: str,
+    models: Dict[str, Dict],
+    track_ids: List[str],
+    track_id_to_idx: Dict[str, int],
+    meta_df: pd.DataFrame,
+    playlist_to_tracks: Dict[int, List[str]],
+    playlist_ids_eval: List[int],
+    num_playlists: int = 500,
+    top_k: int = 10,
+    seed: int = 0,
+) -> Tuple[float, float, int]:
+    """
+    Evaluate a kNN model using playlist-based held-out testing.
+    
+    For each playlist:
+    - Pick one seed track
+    - Measure how many other playlist tracks appear in top_k recommendations
+    
+    Args:
+        model_name: Name of model to evaluate
+        models: Dictionary of fitted models
+        track_ids: List of track IDs
+        track_id_to_idx: Track ID to index mapping
+        meta_df: Metadata DataFrame
+        playlist_to_tracks: Mapping from playlist ID to track list
+        playlist_ids_eval: List of playlist IDs to sample from
+        num_playlists: Number of playlists to evaluate
+        top_k: Cutoff for recommendations
+        seed: Random seed
+        
+    Returns:
+        Tuple of (avg_recall, avg_hit_rate, n_evaluated)
+    """
+    rng = random.Random(seed)
+    
+    sampled_pids = rng.sample(
+        playlist_ids_eval,
+        min(num_playlists, len(playlist_ids_eval))
+    )
+    
+    recalls = []
+    hits = []
+    
+    for pid in sampled_pids:
+        tracks = playlist_to_tracks[pid]
+        seed_track = rng.choice(tracks)
+        relevant = set(tracks) - {seed_track}
+        
+        if not relevant:
+            continue
+        
+        try:
+            rec_df = knn_recommend(model_name, models, seed_track, track_ids,
+                                  track_id_to_idx, meta_df, top_k=top_k)
+        except ValueError:
+            continue
+        
+        rec_ids = set(rec_df["track_id"])
+        
+        n_hits = len(relevant & rec_ids)
+        recall = n_hits / len(relevant)
+        hit = 1.0 if n_hits > 0 else 0.0
+        
+        recalls.append(recall)
+        hits.append(hit)
+    
+    if not recalls:
+        return 0.0, 0.0, 0
+    
+    avg_recall = float(np.mean(recalls))
+    avg_hit_rate = float(np.mean(hits))
+    return avg_recall, avg_hit_rate, len(recalls)
+
+def average_precision_at_k(ranked_ids: List[str], relevant_ids: Set[str], k: int) -> float:
+    """
+    Compute Average Precision@k for a single ranked list.
+    
+    Args:
+        ranked_ids: List of recommended track IDs (ordered)
+        relevant_ids: Set of ground-truth relevant track IDs
+        k: Cutoff position
+        
+    Returns:
+        AP@k score in [0, 1]
+    """
+    if not relevant_ids:
+        return 0.0
+    
+    hits = 0
+    sum_precisions = 0.0
+    for i, tid in enumerate(ranked_ids[:k], start=1):
+        if tid in relevant_ids:
+            hits += 1
+            precision_i = hits / i
+            sum_precisions += precision_i
+    
+    denom = min(len(relevant_ids), k)
+    if denom == 0:
+        return 0.0
+    return sum_precisions / denom
+
+
+def ndcg_at_k(ranked_ids: List[str], relevant_ids: Set[str], k: int) -> float:
+    """
+    Compute NDCG@k for binary relevance.
+    
+    Args:
+        ranked_ids: List of recommended track IDs (ordered)
+        relevant_ids: Set of ground-truth relevant track IDs
+        k: Cutoff position
+        
+    Returns:
+        NDCG@k score in [0, 1]
+    """
+    # DCG
+    dcg = 0.0
+    for i, tid in enumerate(ranked_ids[:k], start=1):
+        rel = 1.0 if tid in relevant_ids else 0.0
+        if rel > 0:
+            dcg += rel / math.log2(i + 1)
+    
+    # IDCG (ideal DCG)
+    max_rels = min(len(relevant_ids), k)
+    if max_rels == 0:
+        return 0.0
+    
+    idcg = 0.0
+    for i in range(1, max_rels + 1):
+        idcg += 1.0 / math.log2(i + 1)
+    
+    if idcg == 0:
+        return 0.0
+    
+    return dcg / idcg
+
+
+def evaluate_knn_model_multi_k(
+    model_name: str,
+    models: Dict,
+    track_ids: List[str],
+    track_id_to_idx: Dict[str, int],
+    meta_df: pd.DataFrame,
+    playlist_to_tracks: Dict[int, List[str]],
+    playlist_ids_eval: List[int],
+    Ks: Tuple[int, ...] = (5, 10, 20, 50),
+    num_playlists: int = 500,
+    seed: int = 0,
+) -> Tuple[pd.DataFrame, int]:
+    """
+    Evaluate a kNN model across multiple K values with comprehensive metrics.
+    
+    Computes: Recall@K, HitRate@K, Precision@K, MAP@K, NDCG@K
+    
+    Args:
+        model_name: Name of model to evaluate
+        models: Dictionary of fitted models
+        track_ids: List of track IDs
+        track_id_to_idx: Track ID to index mapping
+        meta_df: Metadata DataFrame
+        playlist_to_tracks: Playlist to track list mapping
+        playlist_ids_eval: List of playlist IDs to sample
+        Ks: Tuple of K values to evaluate
+        num_playlists: Number of playlists to evaluate
+        seed: Random seed
+        
+    Returns:
+        Tuple of (metrics_df, n_evaluated)
+    """
+    from src.recommender_helpers import knn_recommend
+    
+    rng = random.Random(seed)
+    Ks = sorted(list(Ks))
+    max_k = Ks[-1]
+    
+    sampled_pids = rng.sample(
+        playlist_ids_eval,
+        min(num_playlists, len(playlist_ids_eval))
+    )
+    
+    # Accumulators
+    stats = {
+        "Recall": {k: [] for k in Ks},
+        "HitRate": {k: [] for k in Ks},
+        "Precision": {k: [] for k in Ks},
+        "MAP": {k: [] for k in Ks},
+        "NDCG": {k: [] for k in Ks},
+    }
+    
+    n_eval = 0
+    
+    for pid in sampled_pids:
+        tracks = playlist_to_tracks[pid]
+        if len(tracks) < 2:
+            continue
+        
+        seed_track = rng.choice(tracks)
+        relevant = set(tracks) - {seed_track}
+        if not relevant:
+            continue
+        
+        try:
+            rec_df = knn_recommend(model_name, models, seed_track, track_ids,
+                                  track_id_to_idx, meta_df, top_k=max_k)
+        except ValueError:
+            continue
+        
+        ranked_ids = list(rec_df["track_id"])
+        if not ranked_ids:
+            continue
+        
+        n_eval += 1
+        
+        for k in Ks:
+            topk = ranked_ids[:k]
+            topk_set = set(topk)
+            
+            n_hits = len(relevant & topk_set)
+            recall_k = n_hits / len(relevant)
+            hit_k = 1.0 if n_hits > 0 else 0.0
+            precision_k = n_hits / len(topk) if topk else 0.0
+            ap_k = average_precision_at_k(ranked_ids, relevant, k)
+            ndcg_k = ndcg_at_k(ranked_ids, relevant, k)
+            
+            stats["Recall"][k].append(recall_k)
+            stats["HitRate"][k].append(hit_k)
+            stats["Precision"][k].append(precision_k)
+            stats["MAP"][k].append(ap_k)
+            stats["NDCG"][k].append(ndcg_k)
+    
+    # Aggregate
+    data = {}
+    for metric_name, per_k in stats.items():
+        data[metric_name] = {
+            k: float(np.mean(vals)) if len(vals) > 0 else 0.0
+            for k, vals in per_k.items()
+        }
+    
+    metrics_df = pd.DataFrame(data).T
+    metrics_df.columns = [f"@{k}" for k in Ks]
+    metrics_df.index.name = f"{model_name} metrics"
+    
+    return metrics_df, n_eval
+
+def plot_knn_metrics_comparison(multi_k_results: Dict[str, pd.DataFrame],
+                                model_names: List[str],
+                                K_LIST: List[int],
+                                figsize: tuple = (14, 6)) -> None:
+    """
+    Create comprehensive visualization of kNN model performance.
+    
+    Args:
+        multi_k_results: Dictionary mapping model names to metric DataFrames
+        model_names: List of model names to plot
+        K_LIST: List of K values
+        figsize: Figure size tuple
+    """
+    import matplotlib.pyplot as plt
+    import numpy as np
+    
+    plt.style.use('seaborn-v0_8-darkgrid')
+    fig, axes = plt.subplots(1, 2, figsize=figsize)
+    
+    colors = plt.cm.Set3(np.linspace(0, 1, len(model_names)))
+    markers = ['o', 's', '^', 'D', 'v', 'p', '*', 'h', 'X', 'd']
+    
+    # Plot 1: HitRate@K
+    for idx, mname in enumerate(model_names):
+        df = multi_k_results[mname]
+        ks = [int(col.strip("@")) for col in df.columns]
+        axes[0].plot(
+            ks,
+            df.loc["HitRate"].values,
+            marker=markers[idx % len(markers)],
+            markersize=8,
+            linewidth=2,
+            color=colors[idx],
+            label=mname,
+            alpha=0.8
+        )
+    
+    axes[0].set_xlabel("Recommendation List Size (K)", fontsize=12, fontweight='bold')
+    axes[0].set_ylabel("HitRate@K", fontsize=12, fontweight='bold')
+    axes[0].set_title("KNN Evaluation - HitRate@K vs K", fontsize=14, fontweight='bold')
+    axes[0].set_xticks(K_LIST)
+    axes[0].tick_params(axis='both', which='major', labelsize=10)
+    axes[0].legend(fontsize=10, loc='best', framealpha=0.9, shadow=True)
+    axes[0].grid(True, alpha=0.4, linestyle='--', linewidth=0.5)
+    
+    # Plot 2: NDCG@K
+    for idx, mname in enumerate(model_names):
+        df = multi_k_results[mname]
+        ks = [int(col.strip("@")) for col in df.columns]
+        axes[1].plot(
+            ks,
+            df.loc["NDCG"].values,
+            marker=markers[idx % len(markers)],
+            markersize=8,
+            linewidth=2,
+            color=colors[idx],
+            label=mname,
+            alpha=0.8
+        )
+    
+    axes[1].set_xlabel("Recommendation List Size (K)", fontsize=12, fontweight='bold')
+    axes[1].set_ylabel("NDCG@K", fontsize=12, fontweight='bold')
+    axes[1].set_title("KNN Evaluation - NDCG@K vs K", fontsize=14, fontweight='bold')
+    axes[1].set_xticks(K_LIST)
+    axes[1].tick_params(axis='both', which='major', labelsize=10)
+    axes[1].legend(fontsize=10, loc='upper left', framealpha=0.9, shadow=True)
+    axes[1].grid(True, alpha=0.4, linestyle='--', linewidth=0.5)
+    
+    plt.tight_layout()
+    plt.show()
+
+
+def plot_all_metrics_at_k(multi_k_results: Dict[str, pd.DataFrame],
+                          model_names: List[str],
+                          k: int = 10,
+                          figsize: tuple = (12, 7)) -> None:
+    """
+    Create bar chart comparing all metrics at a specific K value.
+    
+    Args:
+        multi_k_results: Dictionary mapping model names to metric DataFrames
+        model_names: List of model names
+        k: K value to visualize
+        figsize: Figure size tuple
+    """
+    import matplotlib.pyplot as plt
+    import numpy as np
+    
+    fig, ax = plt.subplots(figsize=figsize)
+    
+    x = np.arange(len(model_names))
+    width = 0.15
+    metrics = ['Recall', 'HitRate', 'Precision', 'MAP', 'NDCG']
+    colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd']
+    
+    for i, metric in enumerate(metrics):
+        values = []
+        for mname in model_names:
+            df = multi_k_results[mname]
+            values.append(df.loc[metric, f"@{k}"])
+        
+        ax.bar(x + i*width - 2*width, values, width, label=metric, 
+              color=colors[i], alpha=0.8, edgecolor='black', linewidth=0.5)
+    
+    ax.set_xlabel('Models', fontsize=12, fontweight='bold')
+    ax.set_ylabel('Score', fontsize=12, fontweight='bold')
+    ax.set_title(f'KNN Evaluation - Performance Comparison at K={k}', 
+                fontsize=14, fontweight='bold')
+    ax.set_xticks(x)
+    ax.set_xticklabels(model_names, rotation=45, ha='right', fontsize=10)
+    ax.legend(fontsize=10, loc='upper left', framealpha=0.9, shadow=True)
+    ax.grid(True, axis='y', alpha=0.3, linestyle='--', linewidth=0.5)
     
     plt.tight_layout()
     plt.show()
