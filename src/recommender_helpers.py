@@ -971,3 +971,199 @@ def plot_all_metrics_at_k(multi_k_results: Dict[str, pd.DataFrame],
     
     plt.tight_layout()
     plt.show()
+
+def find_tracks_by_name(query: str, meta_simple: pd.DataFrame, n: int = 25) -> pd.DataFrame:
+    """
+    Fuzzy search for tracks whose name contains `query` (case-insensitive).
+    
+    Args:
+        query: Search string
+        meta_simple: DataFrame with track metadata
+        n: Maximum results to return
+        
+    Returns:
+        DataFrame of matching tracks
+    """
+    mask = meta_simple["track_name"].str.contains(query, case=False, na=False)
+    candidates = meta_simple[mask].head(n).reset_index(drop=True)
+    return candidates
+
+
+def recommend_similar_tracks_by_id_als(
+    seed_track_id: str,
+    track_factors: np.ndarray,
+    tid_to_idx: dict,
+    idx_to_tid: np.ndarray,
+    meta_simple: pd.DataFrame,
+    top_k: int = 15
+) -> pd.DataFrame:
+    """
+    Use ALS track factors as an item-item model.
+    
+    Args:
+        seed_track_id: Spotify track ID to find similar tracks for
+        track_factors: ALS user_factors matrix (tracks)
+        tid_to_idx: Mapping from track_id to index
+        idx_to_tid: Array of track IDs by index
+        meta_simple: DataFrame with track metadata
+        top_k: Number of recommendations
+        
+    Returns:
+        DataFrame with recommendations including similarity scores
+    """
+    if seed_track_id not in tid_to_idx:
+        raise ValueError(f"track_id {seed_track_id} not in ALS training set")
+    
+    seed_idx = tid_to_idx[seed_track_id]
+    seed_vec = track_factors[seed_idx]
+    
+    scores = track_factors @ seed_vec
+    scores[seed_idx] = -np.inf
+    
+    top_idx = np.argpartition(-scores, top_k)[:top_k]
+    top_idx = top_idx[np.argsort(-scores[top_idx])]
+    
+    top_scores = scores[top_idx]
+    top_tids = idx_to_tid[top_idx]
+    
+    rec_df = pd.DataFrame({
+        "track_id": top_tids,
+        "als_similarity": top_scores,
+    })
+    rec_df = rec_df.merge(meta_simple.reset_index(), on="track_id", how="left")
+    return rec_df
+
+
+def recommend_by_name_als(
+    query: str,
+    track_factors: np.ndarray,
+    tid_to_idx: dict,
+    idx_to_tid: np.ndarray,
+    meta_simple: pd.DataFrame,
+    candidate_index: int = 0,
+    top_k: int = 15
+) -> pd.DataFrame:
+    """
+    Search by track name and return ALS-based similar tracks.
+    
+    Args:
+        query: Search string
+        track_factors: ALS track factors
+        tid_to_idx: Track ID to index mapping
+        idx_to_tid: Index to track ID array
+        meta_simple: Metadata DataFrame
+        candidate_index: Which search result to use
+        top_k: Number of recommendations
+        
+    Returns:
+        DataFrame with recommendations
+    """
+    candidates = find_tracks_by_name(query, meta_simple, n=20)
+    if candidates.empty:
+        print(f"No matches for query: {query}")
+        return None
+    
+    print("Search results:")
+    print(candidates)
+    
+    if candidate_index >= len(candidates):
+        raise IndexError(
+            f"candidate_index {candidate_index} out of range for {len(candidates)} matches"
+        )
+    
+    seed_row = candidates.iloc[candidate_index]
+    seed_tid = seed_row["track_id"]
+    
+    print("\nChosen seed track:")
+    print(seed_row.to_frame().T)
+    
+    recs = recommend_similar_tracks_by_id_als(
+        seed_tid, track_factors, tid_to_idx, idx_to_tid, meta_simple, top_k=top_k
+    )
+    
+    print("\nALS similar-track recommendations:")
+    print(recs[["track_name", "artist_name", "album_name", "als_similarity"]])
+    
+    return recs
+
+def find_tracks_by_name_item2vec(query: str, track_meta: pd.DataFrame, top_n: int = 20) -> pd.DataFrame:
+    """
+    Search for tracks by name or artist (case-insensitive).
+    
+    Args:
+        query: Search string
+        track_meta: DataFrame with track metadata
+        top_n: Maximum results to return
+        
+    Returns:
+        DataFrame with matching tracks
+    """
+    q = query.lower()
+    mask = (
+        track_meta["track_name"].str.lower().str.contains(q, na=False)
+        | track_meta["artist_name"].str.lower().str.contains(q, na=False)
+    )
+    candidates = (
+        track_meta.loc[mask, ["track_id", "track_name"]]
+        .drop_duplicates()
+        .head(top_n)
+    )
+    return candidates
+
+
+def recommend_by_name_item2vec(
+    query: str,
+    model,
+    meta_simple: pd.DataFrame,
+    track_meta: pd.DataFrame,
+    candidate_index: int = 0,
+    top_k: int = 15
+) -> pd.DataFrame:
+    """
+    Search by track name and return Item2Vec similar tracks.
+    
+    Args:
+        query: Search string
+        model: Trained Word2Vec model
+        meta_simple: Simple metadata DataFrame (indexed by track_id)
+        track_meta: Full metadata DataFrame
+        candidate_index: Which search result to use as seed
+        top_k: Number of recommendations
+        
+    Returns:
+        DataFrame with recommendations
+    """
+    from src.recommender_helpers import find_tracks_by_name_item2vec
+    
+    candidates = find_tracks_by_name_item2vec(query, track_meta, top_n=50)
+    if candidates.empty:
+        print(f"No matches found for query '{query}'")
+        return pd.DataFrame()
+    
+    print("Search results:")
+    print(candidates.reset_index(drop=True))
+    
+    if candidate_index >= len(candidates):
+        raise ValueError(f"candidate_index {candidate_index} out of range")
+    
+    seed_row = candidates.iloc[candidate_index]
+    seed_tid = seed_row["track_id"]
+    
+    print("\nChosen seed track:")
+    print(seed_row.to_frame().T)
+    
+    if seed_tid not in model.wv:
+        print("\n[Item2Vec] Seed track not in vocab. Try another candidate.")
+        return pd.DataFrame()
+    
+    sims = model.wv.most_similar(seed_tid, topn=top_k)
+    rec_ids = [tid for tid, score in sims]
+    rec_scores = [score for tid, score in sims]
+    
+    # Use describe_tracks helper
+    ids = list(rec_ids)
+    df = meta_simple.loc[meta_simple.index.intersection(ids)].copy()
+    df = df.reset_index().set_index("track_id").loc[ids].reset_index()
+    
+    df["item2vec_similarity"] = rec_scores
+    return df
