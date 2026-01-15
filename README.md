@@ -292,10 +292,8 @@ print(recommendations[["track_name", "artist_name", "hybrid_score"]])
 
 **Kieran Satheesan**
 
-📧 [kieran.satheesan@example.com](mailto:kieran.satheesan@example.com)  
 💼 [LinkedIn](https://linkedin.com/in/kieran-satheesan)  
 📝 [Medium](https://medium.com/@kieransatheesan)  
-🐙 [GitHub](https://github.com/KieranSatheesan)
 
 ---
 
