@@ -10,7 +10,7 @@ A hybrid music recommendation system combining content-based filtering and colla
   <img src="Images/Screenshot 2026-01-13 123805.png" alt="Hybrid Recommender Demo" width="800"/>
 </p>
 
-📖 **[Read the full technical writeup on Medium](https://medium.com/@kieransatheesan/hybrid-music-recommender-system-f9d4b55e8c0a)**
+📖 **[Read the full technical writeup on Medium](https://medium.com/@kieransatheesan/hybrid-music-recommender-system-bc0a734e5b91)**
 
 ---
 
