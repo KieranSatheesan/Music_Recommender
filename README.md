@@ -39,12 +39,6 @@ cd Music_Recommender
 pip install -r requirements.txt
 ```
 
-### Download Data
-
-Pre-processed data and trained models are available via [Google Drive](https://drive.google.com/drive/folders/YOUR_FOLDER_ID). Extract to:
-- `data/processed/`
-- `models/`
-
 ### Run the App
 ```bash
 streamlit run app.py
